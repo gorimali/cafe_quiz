@@ -2,9 +2,201 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Title</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cafe Quiz Time!</title>
+    <style>
+        :root {
+            --primary-color: #6a1b9a; /* Mor tema */
+            --secondary-color: #f3e5f5;
+            --accent-color: #ffab40; /* Vurgu rengi */
+            --text-color: #333;
+            --light-text: #fff;
+            --border-radius: 8px;
+            --box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+        }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 700px;
+            margin: 40px auto;
+            padding: 25px;
+            background-color: var(--secondary-color);
+            color: var(--text-color);
+            border-radius: var(--border-radius);
+            box-shadow: var(--box-shadow);
+        }
+        h1, h2 { text-align: center; color: var(--primary-color); margin-bottom: 20px; }
+        .score-board {
+             background-color: var(--primary-color);
+             color: var(--light-text);
+             padding: 10px 15px;
+             border-radius: var(--border-radius);
+             margin-bottom: 20px;
+             text-align: center;
+             font-size: 1.2em;
+             font-weight: bold;
+         }
+        .question-container {
+            margin-bottom: 25px;
+            padding: 20px;
+            background-color: #fff;
+            border-radius: var(--border-radius);
+            box-shadow: var(--box-shadow);
+        }
+        .question-number { font-size: 0.9em; color: #777; margin-bottom: 5px; }
+        .question-text { font-size: 1.3em; margin-bottom: 20px; color: var(--primary-color); font-weight: 500; line-height: 1.4;}
+        .options { list-style: none; padding: 0; margin: 0; }
+        .options li { margin-bottom: 12px; }
+        .options label {
+            display: block;
+            padding: 15px;
+            background-color: #f9f9f9;
+            border: 1px solid #eee;
+            border-radius: var(--border-radius);
+            cursor: pointer;
+            transition: background-color 0.2s ease-in-out, border-color 0.2s ease-in-out, transform 0.1s ease;
+            font-size: 1.1em;
+        }
+        .options label:hover { background-color: #efefef; border-color: #ddd; transform: scale(1.02); }
+        .options input[type="radio"] { display: none; /* Radyo butonunu gizle, etikete tıkla */ }
+        .options input[type="radio"]:checked + span {
+             font-weight: bold; /* Seçili seçeneği kalın yap */
+             color: var(--primary-color);
+         }
+        /* Seçili etiketin arka planını değiştir (isteğe bağlı) */
+        /* .options input[type="radio"]:checked + label {
+            background-color: var(--accent-color);
+            color: var(--light-text);
+            border-color: var(--accent-color);
+        } */
+
+        button[type="submit"] {
+            display: block;
+            width: 100%;
+            padding: 15px 20px;
+            font-size: 1.2em;
+            font-weight: bold;
+            cursor: pointer;
+            background-color: var(--accent-color);
+            color: var(--primary-color);
+            border: none;
+            border-radius: var(--border-radius);
+            margin-top: 25px;
+            transition: background-color 0.2s ease, transform 0.1s ease;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        }
+        button[type="submit"]:hover { background-color: #ff9100; transform: translateY(-2px); }
+        .quiz-over { text-align: center; padding: 40px; background-color: #fff; border-radius: var(--border-radius); box-shadow: var(--box-shadow); }
+        .quiz-over h2 { color: var(--primary-color); font-size: 2em; margin-bottom: 15px;}
+        .final-score { font-size: 1.5em; color: var(--text-color); margin-bottom: 25px; }
+        .reset-link {
+            display: inline-block; /* Tam genişlik olmasın */
+            margin-top: 20px;
+            padding: 10px 25px;
+            color: var(--primary-color);
+            background-color: var(--secondary-color);
+            border: 1px solid var(--primary-color);
+            border-radius: var(--border-radius);
+            text-decoration: none;
+            font-weight: bold;
+            transition: background-color 0.2s ease, color 0.2s ease;
+        }
+        .reset-link:hover { background-color: var(--primary-color); color: var(--light-text); }
+        .error-message {
+             color: #d9534f; /* Kırmızı tonu */
+             background-color: #f2dede;
+             border: 1px solid #ebccd1;
+             padding: 15px;
+             margin-bottom: 20px;
+             border-radius: var(--border-radius);
+             text-align: center;
+         }
+
+        /* İlerleme Çubuğu */
+        .progress-container {
+            width: 100%;
+            height: 25px;
+            background-color: #e0e0e0;
+            border-radius: var(--border-radius);
+            margin-bottom: 25px;
+            overflow: hidden;
+            box-shadow: inset 0 1px 3px rgba(0,0,0,0.2);
+        }
+        .progress-bar {
+            height: 100%;
+            background: linear-gradient(to right, var(--primary-color), #ab47bc); /* Gradient */
+            text-align: center;
+            line-height: 25px;
+            color: white;
+            font-weight: bold;
+            font-size: 0.9em;
+            border-radius: var(--border-radius) 0 0 var(--border-radius);
+            transition: width 0.4s ease-in-out;
+            white-space: nowrap; /* Yazı taşmasın */
+        }
+        {% if quiz_over or total_questions == 0 %}
+        .progress-container { display: none; }
+        {% endif %}
+
+    </style>
 </head>
 <body>
+
+    <h1>Cafe Quiz Time!</h1>
+
+    {% if error_message %}
+        <div class="error-message">{{ error_message }}</div>
+    {% endif %}
+
+    {% if quiz_over %}
+        <div class="quiz-over">
+            <h2>Quiz Over!</h2>
+            {% if final_score is defined %}
+            <p class="final-score">Your Final Score: {{ final_score }} / {{ total_questions }}</p>
+            {% endif %}
+            <a href="{{ url_for('reset_quiz') }}" class="reset-link">Play Again?</a>
+        </div>
+    {% else %}
+        <div class="score-board">Score: {{ score }}</div>
+
+        <!-- İlerleme Çubuğu -->
+        {% if total_questions and total_questions > 0 %}
+        <div class="progress-container">
+            {% set progress_percentage = (q_number / total_questions * 100) | round %}
+            <div class="progress-bar" style="width: {{ progress_percentage }}%;">
+                Question {{ q_number }} of {{ total_questions }}
+            </div>
+        </div>
+        {% endif %}
+
+        {% if question %}
+        <div class="question-container">
+            <p class="question-number">Question {{ q_number }}</p>
+            <p class="question-text">{{ question.question_text }}</p>
+
+            <form action="{{ url_for('submit_answer') }}" method="post">
+                <ul class="options">
+                    {% for option in question.get_options() %}
+                    <li>
+                        <label>
+                            <input type="radio" name="answer" value="{{ option }}" required>
+                            <!-- span içine aldık ki sadece metni stilleyebilelim -->
+                            <span>{{ option }}</span>
+                        </label>
+                    </li>
+                    {% endfor %}
+                </ul>
+                <button type="submit">Submit Answer</button>
+            </form>
+        </div>
+        {% elif not error_message %}
+             <div class="error-message">Loading question... If this persists, please reset.</div>
+        {% endif %}
+
+        <div style="text-align: center; margin-top: 30px;"> <!-- Reset linkini ortaya alalım -->
+             <a href="{{ url_for('reset_quiz') }}" class="reset-link" style="background: none; border: none; color: #777; font-size: 0.9em;">Reset Quiz</a>
+        </div>
+
+    {% endif %}
 
 </body>
 </html>
