@@ -21,7 +21,7 @@ FACEBOOK_APP_SECRET = os.environ.get('FACEBOOK_APP_SECRET')
 # Ortam değişkeni olarak ayarlamak daha esnek olabilir:
 # FACEBOOK_REDIRECT_URI = os.environ.get('FACEBOOK_REDIRECT_URI', 'http://127.0.0.1:5000/facebook/callback')
 # Şimdilik Render URL'sini varsayalım (kendi adresinizle değiştirin!):
-FACEBOOK_REDIRECT_URI = 'https://benim-cafe-quiz.onrender.com/facebook/callback' # <<< KENDİ URL'NİZLE DEĞİŞTİRİN!
+FACEBOOK_REDIRECT_URI = 'https://cafe-quiz.onrender.com/facebook/callback' # <<< KENDİ URL'NİZLE DEĞİŞTİRİN!
 FACEBOOK_API_VERSION = 'v18.0' # API sürümünü belirtmek iyi practice'dir
 
 db = SQLAlchemy(app)
