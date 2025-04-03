@@ -1,20 +1,20 @@
 import os
-import json # JSON işlemek için
-import requests # Facebook API istekleri için
-from flask import Flask, render_template, request, redirect, url_for, session, flash # Flash ekledik
+import json  # JSON işlemek için
+import requests  # Facebook API istekleri için
+from flask import Flask, render_template, request, redirect, url_for, session, flash  # Flash ekledik
 from flask_sqlalchemy import SQLAlchemy
-from flask_socketio import SocketIO, emit # SocketIO ekledik
+from flask_socketio import SocketIO, emit  # SocketIO ekledik
 import logging
-import time # Zamanlama için
-import threading # Arka plan görevi için
-import random # Rastgele soru seçimi için (opsiyonel)
-from datetime import datetime, timedelta # Zamanlama için
+import time  # Zamanlama için
+import threading  # Arka plan görevi için
+import random  # Rastgele soru seçimi için (opsiyonel)
+from datetime import datetime, timedelta  # Zamanlama için
 
 # --- Uygulama ve Yapılandırma ---
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 # async_mode=None, gevent veya eventlet kurulu değilse varsayılanı kullanır
-socketio = SocketIO(app, async_mode=None) # SocketIO'yu başlat
+socketio = SocketIO(app, async_mode=None)  # SocketIO'yu başlat
 
 # Ortam Değişkenleri (Render'da ayarlanacak)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'yerel_cok_gizli_anahtar_degistir')
@@ -28,8 +28,8 @@ FACEBOOK_APP_SECRET = os.environ.get('FACEBOOK_APP_SECRET')
 # Ortam değişkeni olarak ayarlamak daha esnek olabilir:
 # FACEBOOK_REDIRECT_URI = os.environ.get('FACEBOOK_REDIRECT_URI', 'http://127.0.0.1:5000/facebook/callback')
 # Şimdilik Render URL'sini varsayalım (kendi adresinizle değiştirin!):
-FACEBOOK_REDIRECT_URI = 'https://cafe-quiz.onrender.com/facebook/callback' # <<< KENDİ URL'NİZLE DEĞİŞTİRİN!
-FACEBOOK_API_VERSION = 'v18.0' # API sürümünü belirtmek iyi practice'dir
+FACEBOOK_REDIRECT_URI = 'https://cafe-quiz.onrender.com/facebook/callback'  # <<< KENDİ URL'NİZLE DEĞİŞTİRİN!
+FACEBOOK_API_VERSION = 'v18.0'  # API sürümünü belirtmek iyi practice'dir
 
 db = SQLAlchemy(app)
 
@@ -37,11 +37,11 @@ db = SQLAlchemy(app)
 current_question_data = {
     "question": None,
     "end_time": None,
-    "question_id": None # Cevapları doğrulamak için
+    "question_id": None  # Cevapları doğrulamak için
 }
 quiz_timer_thread = None
-stop_event = threading.Event() # Arka plan görevini durdurmak için
-QUESTION_DURATION = 15 # Saniye cinsinden soru süresi
+stop_event = threading.Event()  # Arka plan görevini durdurmak için
+QUESTION_DURATION = 15  # Saniye cinsinden soru süresi
 
 # --- Veritabanı Modelleri ---
 class User(db.Model):
@@ -91,14 +91,52 @@ def index():
     user = get_current_user()
     if not user:
         # Kullanıcı giriş yapmamışsa, giriş sayfasına yönlendir (veya giriş butonu göster)
-        return render_template('login.html') # Yeni bir login şablonu oluşturacağız
+        return render_template('login.html')
 
-    # Kullanıcı giriş yapmışsa quiz sayfasını render et.
-    # Gerçek soru yüklemesi client-side JS ve SocketIO ile yapılacak.
-    logging.info(f"Rendering quiz page for user {user.name}")
-    return render_template('quiz.html', current_user=user)
-    # Not: Skor gibi bilgiler artık client-side'da veya başka bir mekanizma ile tutulabilir.
-    # Şimdilik basit tutuyoruz.
+    # Kullanıcı giriş yapmışsa quiz'i göster
+    try:
+        # ... (Önceki index fonksiyonundaki quiz mantığı buraya gelecek) ...
+        if 'current_question_index' not in session or session.get('quiz_over'):
+            logging.info(f"User {user.name} starting/resetting quiz.")
+            session['current_question_index'] = 0
+            session['score'] = 0
+            session['quiz_over'] = False
+            session['total_questions'] = Question.query.count()
+
+        q_index = session['current_question_index']
+        total_questions = session.get('total_questions', 0)
+        error_message = session.pop('error_message', None)  # Flash mesajları kullanacağız ama bu kalabilir
+
+        if total_questions == 0:
+            flash("Quiz is not ready yet. No questions found!", "warning")
+            return render_template('quiz.html', quiz_over=True, current_user=user)
+        elif q_index >= total_questions:
+            session['quiz_over'] = True
+            return render_template('quiz.html', quiz_over=True, final_score=session['score'], total_questions=total_questions, current_user=user)
+
+        current_q = Question.query.order_by(Question.id).offset(q_index).first()
+        if not current_q:
+            flash("An error occurred while fetching the question.", "danger")
+            session['quiz_over'] = True
+            return render_template('quiz.html', quiz_over=True, current_user=user)
+
+        # --- Diagnostic Logging ---
+        logging.info(f"Rendering quiz for user {user.name}. Q Index: {q_index}, Total Qs: {total_questions}, Score: {session['score']}")
+        logging.info(f"Fetched Question Object: {current_q}")
+        # --- End Diagnostic Logging ---
+
+        return render_template('quiz.html',
+                               question=current_q,
+                               score=session['score'],
+                               q_number=q_index + 1,
+                               total_questions=total_questions,
+                               quiz_over=False,
+                               current_user=user)
+    except Exception as e:
+        logging.exception("An error occurred in index route for logged in user:")
+        flash("An unexpected error occurred. Please try logging in again.", "danger")
+        session.clear()  # Hata durumunda oturumu temizle
+        return redirect(url_for('login_page'))
 
 # Yeni giriş sayfası rotası
 @app.route('/login')
@@ -120,7 +158,7 @@ def facebook_login():
         f"https://www.facebook.com/{FACEBOOK_API_VERSION}/dialog/oauth?"
         f"client_id={FACEBOOK_APP_ID}"
         f"&redirect_uri={FACEBOOK_REDIRECT_URI}"
-        f"&scope=public_profile,email" # İstediğimiz izinler (email opsiyonel)
+        f"&scope=public_profile,email"  # İstediğimiz izinler (email opsiyonel)
         # CSRF koruması için 'state' parametresi eklemek iyi practice'dir.
         # state = secrets.token_urlsafe(16)
         # session['oauth_state'] = state
@@ -164,7 +202,7 @@ def facebook_callback():
     }
     try:
         token_response = requests.get(token_url, params=token_params)
-        token_response.raise_for_status() # HTTP hatası varsa exception fırlat
+        token_response.raise_for_status()  # HTTP hatası varsa exception fırlat
         token_data = token_response.json()
     except requests.exceptions.RequestException as e:
         logging.error(f"Error requesting access token: {e}")
@@ -175,7 +213,6 @@ def facebook_callback():
         logging.error(f"Failed to decode JSON from access token response: {token_response.text}")
         flash("Received invalid response from Facebook for access token.", "danger")
         return redirect(url_for('login_page'))
-
 
     access_token = token_data.get('access_token')
     if not access_token:
@@ -189,7 +226,7 @@ def facebook_callback():
     # --- Access Token ile Kullanıcı Bilgilerini Al ---
     user_info_url = f"https://graph.facebook.com/{FACEBOOK_API_VERSION}/me"
     user_info_params = {
-        'fields': 'id,name,picture', # İstediğimiz alanlar (picture varsayılan küçük boy döner)
+        'fields': 'id,name,picture',  # İstediğimiz alanlar (picture varsayılan küçük boy döner)
         'access_token': access_token
     }
     # Daha büyük profil resmi için: 'fields': 'id,name,picture.type(large)'
@@ -207,10 +244,9 @@ def facebook_callback():
         flash("Received invalid response from Facebook for user profile.", "danger")
         return redirect(url_for('login_page'))
 
-
     facebook_id = user_data.get('id')
     user_name = user_data.get('name')
-    # profile_pic_data = user_data.get('picture', {}).get('data', {}).get('url') # Picture URL'si
+    # profile_pic_data = user_data.get('picture', {}).get('data', {}).get('url')  # Picture URL'si
 
     if not facebook_id or not user_name:
         logging.error(f"Facebook response missing ID or Name: {user_data}")
@@ -237,15 +273,15 @@ def facebook_callback():
 
         # Kullanıcıyı session'a kaydet
         session['user_id'] = user.id
-        session['user_name'] = user.name # Kolay erişim için
-        # session['profile_pic'] = profile_pic_data # İsterseniz bunu da saklayın
+        session['user_name'] = user.name  # Kolay erişim için
+        # session['profile_pic'] = profile_pic_data  # İsterseniz bunu da saklayın
 
         logging.info(f"User {user.name} logged in successfully.")
         flash(f"Welcome, {user.name}!", "success")
-        return redirect(url_for('index')) # Quiz sayfasına yönlendir
+        return redirect(url_for('index'))  # Quiz sayfasına yönlendir
 
     except Exception as e:
-        db.session.rollback() # Veritabanı hatası olursa geri al
+        db.session.rollback()  # Veritabanı hatası olursa geri al
         logging.exception("Database error during user lookup/creation:")
         flash("An error occurred while accessing user data. Please try again.", "danger")
         return redirect(url_for('login_page'))
@@ -264,7 +300,7 @@ def logout():
     session.pop('quiz_over', None)
     session.pop('total_questions', None)
     flash("You have been logged out.", "info")
-    return redirect(url_for('login_page')) # Giriş sayfasına yönlendir
+    return redirect(url_for('login_page'))  # Giriş sayfasına yönlendir
 
 
 # Cevap gönderme rotasını da giriş kontrolü ile güncelle
@@ -278,7 +314,7 @@ def submit_answer():
     # Cevabı global aktif soruya göre işle
     try:
         user_answer = request.form.get('answer')
-        submitted_question_id = request.form.get('question_id') # Hangi soruya cevap verildiğini bilmek için
+        submitted_question_id = request.form.get('question_id')  # Hangi soruya cevap verildiğini bilmek için
 
         if not user_answer:
             flash("Please select an answer.", "warning")
@@ -287,7 +323,7 @@ def submit_answer():
         # Global state'deki soru ile karşılaştır
         global current_question_data
         active_question_id = current_question_data.get("question_id")
-        active_question = current_question_data.get("question") # Question nesnesi
+        active_question = current_question_data.get("question")  # Question nesnesi
 
         # Zamanında mı cevapladı ve doğru soruya mı?
         if not active_question_id or str(submitted_question_id) != str(active_question_id):
@@ -303,8 +339,8 @@ def submit_answer():
         # Bu, state'i daha hafif tutar.
         correct_q_from_db = Question.query.get(active_question_id)
         if not correct_q_from_db:
-             flash("Could not verify the answer for the current question.", "danger")
-             return redirect(url_for('index'))
+            flash("Could not verify the answer for the current question.", "danger")
+            return redirect(url_for('index'))
 
         is_correct = (user_answer == correct_q_from_db.correct_answer)
 
@@ -346,7 +382,7 @@ def handle_connect():
         if current_question_data.get("question"):
             question_payload = current_question_data["question"].to_dict()
             question_payload["end_time"] = current_question_data["end_time"].isoformat() if current_question_data.get("end_time") else None
-            emit('new_question', question_payload) # Sadece bağlanan kişiye gönder
+            emit('new_question', question_payload)  # Sadece bağlanan kişiye gönder
             logging.info(f"Sent current question {current_question_data['question_id']} to newly connected user {user.name}")
     else:
         logging.warning("Unauthenticated user connected via SocketIO.")
@@ -364,7 +400,7 @@ def background_quiz_timer():
     last_question_id = None
     logging.info("Background quiz timer thread started.")
 
-    with app.app_context(): # Veritabanı erişimi için app context gerekli
+    with app.app_context():  # Veritabanı erişimi için app context gerekli
         while not stop_event.is_set():
             try:
                 # Veritabanından bir sonraki soruyu al (basit sıralama veya rastgele)
@@ -399,14 +435,14 @@ def background_quiz_timer():
                         current_question_data["end_time"] = datetime.now() + timedelta(seconds=QUESTION_DURATION)
                         question_payload = current_question_data["question"].to_dict()
                         question_payload["end_time"] = current_question_data["end_time"].isoformat()
-                        socketio.emit('new_question', question_payload) # Süre güncellemesi için tekrar gönder
+                        socketio.emit('new_question', question_payload)  # Süre güncellemesi için tekrar gönder
 
 
                 else:
                     logging.warning("Timer: No questions found in the database!")
                     # Soru yoksa bir süre bekle
-                    stop_event.wait(QUESTION_DURATION) # Hata durumunda CPU'yu yormamak için bekle
-                    continue # Döngünün başına dön
+                    stop_event.wait(QUESTION_DURATION)  # Hata durumunda CPU'yu yormamak için bekle
+                    continue  # Döngünün başına dön
 
             except Exception as e:
                 logging.exception("Timer: Error in background quiz timer loop:")
@@ -415,7 +451,7 @@ def background_quiz_timer():
 
             # Bir sonraki soruya geçmeden önce bekle
             logging.debug(f"Timer: Waiting for {QUESTION_DURATION} seconds.")
-            stop_event.wait(QUESTION_DURATION) # Belirlenen süre kadar bekle
+            stop_event.wait(QUESTION_DURATION)  # Belirlenen süre kadar bekle
 
     logging.info("Background quiz timer thread stopped.")
 
@@ -436,11 +472,11 @@ def start_quiz_timer():
 def db_create():
     """Veritabanı tablolarını (User ve Question) oluşturur."""
     with app.app_context():
-         try:
-             db.create_all()
-             print("Database tables (User, Question) created successfully!")
-         except Exception as e:
-             print(f"Error creating database tables: {e}")
+        try:
+            db.create_all()
+            print("Database tables (User, Question) created successfully!")
+        except Exception as e:
+            print(f"Error creating database tables: {e}")
 
 @app.cli.command('db-seed')
 def db_seed():
@@ -448,7 +484,7 @@ def db_seed():
     # Kullanıcı eklemeye gerek yok, login ile oluşacaklar.
     # Sadece soru ekleme kısmı kalabilir.
     with app.app_context():
-         try:
+        try:
             num_deleted = db.session.query(Question).delete()
             print(f"Deleted {num_deleted} existing questions before seeding.")
 
@@ -470,7 +506,7 @@ def db_seed():
             db.session.add_all([q1, q2, q3, q4])
             db.session.commit()
             print(f"Database seeded with {Question.query.count()} initial questions!")
-         except Exception as e:
+        except Exception as e:
             db.session.rollback()
             print(f"Error seeding database: {e}")
 
@@ -492,11 +528,11 @@ if __name__ == '__main__':
     start_quiz_timer()
 
     # Uygulamayı SocketIO ile çalıştır
-    port = int(os.environ.get('PORT', 5001)) # Changed default port to 5001
+    port = int(os.environ.get('PORT', 5001))  # Changed default port to 5001
     logging.info(f"Starting SocketIO server on host 0.0.0.0 port {port}")
     # debug=True SocketIO ile dikkatli kullanılmalı, özellikle production'da False olmalı.
     # Yerel geliştirme için debug=True sorun yaratabilir (reloader thread'i iki kez başlatabilir)
     # Gunicorn gibi bir WSGI sunucusu production için daha iyidir.
     # socketio.run(app, debug=False, host='0.0.0.0', port=port)
     # Yerel test için debug'ı açalım ama dikkatli olalım:
-    socketio.run(app, debug=True, host='0.0.0.0', port=port, use_reloader=False) # Reloader'ı kapatmak thread sorununu çözebilir
+        socketio.run(app, debug=True, host='0.0.0.0', port=port, use_reloader=False)  # Reloader'ı kapatmak thread sorununu çözebilir
