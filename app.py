@@ -94,6 +94,11 @@ def index():
              session['quiz_over'] = True
              return render_template('quiz.html', quiz_over=True, current_user=user)
 
+        # --- Diagnostic Logging ---
+        logging.info(f"Rendering quiz for user {user.name}. Q Index: {q_index}, Total Qs: {total_questions}, Score: {session['score']}")
+        logging.info(f"Fetched Question Object: {current_q}")
+        # --- End Diagnostic Logging ---
+
         return render_template('quiz.html',
                                question=current_q,
                                score=session['score'],
