@@ -3,11 +3,18 @@ import json # JSON işlemek için
 import requests # Facebook API istekleri için
 from flask import Flask, render_template, request, redirect, url_for, session, flash # Flash ekledik
 from flask_sqlalchemy import SQLAlchemy
+from flask_socketio import SocketIO, emit # SocketIO ekledik
 import logging
+import time # Zamanlama için
+import threading # Arka plan görevi için
+import random # Rastgele soru seçimi için (opsiyonel)
+from datetime import datetime, timedelta # Zamanlama için
 
 # --- Uygulama ve Yapılandırma ---
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
+# async_mode=None, gevent veya eventlet kurulu değilse varsayılanı kullanır
+socketio = SocketIO(app, async_mode=None) # SocketIO'yu başlat
 
 # Ortam Değişkenleri (Render'da ayarlanacak)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'yerel_cok_gizli_anahtar_degistir')
@@ -25,6 +32,16 @@ FACEBOOK_REDIRECT_URI = 'https://cafe-quiz.onrender.com/facebook/callback' # <<<
 FACEBOOK_API_VERSION = 'v18.0' # API sürümünü belirtmek iyi practice'dir
 
 db = SQLAlchemy(app)
+
+# --- Global Quiz State ---
+current_question_data = {
+    "question": None,
+    "end_time": None,
+    "question_id": None # Cevapları doğrulamak için
+}
+quiz_timer_thread = None
+stop_event = threading.Event() # Arka plan görevini durdurmak için
+QUESTION_DURATION = 15 # Saniye cinsinden soru süresi
 
 # --- Veritabanı Modelleri ---
 class User(db.Model):
@@ -50,6 +67,15 @@ class Question(db.Model):
     def get_options(self):
         return [self.option1, self.option2, self.option3, self.option4]
 
+    def to_dict(self):
+        """Soruyu istemciye göndermek için sözlük formatına çevirir."""
+        return {
+            'id': self.id,
+            'question_text': self.question_text,
+            'options': self.get_options(),
+            # Doğru cevabı istemciye göndermiyoruz!
+        }
+
 # --- Yardımcı Fonksiyon ---
 def get_current_user():
     """Session'daki user_id'ye göre User nesnesini döndürür."""
@@ -67,45 +93,12 @@ def index():
         # Kullanıcı giriş yapmamışsa, giriş sayfasına yönlendir (veya giriş butonu göster)
         return render_template('login.html') # Yeni bir login şablonu oluşturacağız
 
-    # Kullanıcı giriş yapmışsa quiz'i göster
-    try:
-        # ... (Önceki index fonksiyonundaki quiz mantığı buraya gelecek) ...
-        if 'current_question_index' not in session or session.get('quiz_over'):
-            logging.info(f"User {user.name} starting/resetting quiz.")
-            session['current_question_index'] = 0
-            session['score'] = 0
-            session['quiz_over'] = False
-            session['total_questions'] = Question.query.count()
-
-        q_index = session['current_question_index']
-        total_questions = session.get('total_questions', 0)
-        error_message = session.pop('error_message', None) # Flash mesajları kullanacağız ama bu kalabilir
-
-        if total_questions == 0:
-            flash("Quiz is not ready yet. No questions found!", "warning")
-            return render_template('quiz.html', quiz_over=True, current_user=user)
-        elif q_index >= total_questions:
-            session['quiz_over'] = True
-            return render_template('quiz.html', quiz_over=True, final_score=session['score'], total_questions=total_questions, current_user=user)
-
-        current_q = Question.query.order_by(Question.id).offset(q_index).first()
-        if not current_q:
-             flash("An error occurred while fetching the question.", "danger")
-             session['quiz_over'] = True
-             return render_template('quiz.html', quiz_over=True, current_user=user)
-
-        return render_template('quiz.html',
-                               question=current_q,
-                               score=session['score'],
-                               q_number=q_index + 1,
-                               total_questions=total_questions,
-                               quiz_over=False,
-                               current_user=user)
-    except Exception as e:
-         logging.exception("An error occurred in index route for logged in user:")
-         flash("An unexpected error occurred. Please try logging in again.", "danger")
-         session.clear() # Hata durumunda oturumu temizle
-         return redirect(url_for('login_page'))
+    # Kullanıcı giriş yapmışsa quiz sayfasını render et.
+    # Gerçek soru yüklemesi client-side JS ve SocketIO ile yapılacak.
+    logging.info(f"Rendering quiz page for user {user.name}")
+    return render_template('quiz.html', current_user=user)
+    # Not: Skor gibi bilgiler artık client-side'da veya başka bir mekanizma ile tutulabilir.
+    # Şimdilik basit tutuyoruz.
 
 # Yeni giriş sayfası rotası
 @app.route('/login')
@@ -282,33 +275,52 @@ def submit_answer():
         flash("Please log in to submit answers.", "warning")
         return redirect(url_for('login_page'))
 
-    # ... Önceki submit_answer fonksiyonundaki mantık ...
+    # Cevabı global aktif soruya göre işle
     try:
-        if session.get('quiz_over'):
-            return redirect(url_for('index'))
-
-        q_index = session['current_question_index']
         user_answer = request.form.get('answer')
+        submitted_question_id = request.form.get('question_id') # Hangi soruya cevap verildiğini bilmek için
 
         if not user_answer:
-            flash("Please select an answer.", "warning") # Flash mesajı kullan
-            # session['error_message'] = "Please select an answer." # Eski yöntem
+            flash("Please select an answer.", "warning")
             return redirect(url_for('index'))
 
-        current_q = Question.query.order_by(Question.id).offset(q_index).first()
-        if not current_q:
-            flash("Error finding the question.", "danger")
+        # Global state'deki soru ile karşılaştır
+        global current_question_data
+        active_question_id = current_question_data.get("question_id")
+        active_question = current_question_data.get("question") # Question nesnesi
+
+        # Zamanında mı cevapladı ve doğru soruya mı?
+        if not active_question_id or str(submitted_question_id) != str(active_question_id):
+            flash("Too late, or answer submitted for a previous question!", "info")
             return redirect(url_for('index'))
 
-        logging.info(f"User {user.name} submitted '{user_answer}' for Q{q_index+1}. Correct: '{current_q.correct_answer}'")
-        if user_answer == current_q.correct_answer:
-            session['score'] = session.get('score', 0) + 1
-            logging.info(f"Correct! User {user.name} score: {session['score']}")
+        # Zaman kontrolü (opsiyonel ama iyi fikir)
+        # if datetime.now() > current_question_data.get("end_time"):
+        #     flash("Time is up for this question!", "info")
+        #     return redirect(url_for('index'))
+
+        # Veritabanından doğru cevabı al (global state'de tutmak yerine)
+        # Bu, state'i daha hafif tutar.
+        correct_q_from_db = Question.query.get(active_question_id)
+        if not correct_q_from_db:
+             flash("Could not verify the answer for the current question.", "danger")
+             return redirect(url_for('index'))
+
+        is_correct = (user_answer == correct_q_from_db.correct_answer)
+
+        logging.info(f"User {user.name} submitted '{user_answer}' for Q_ID {active_question_id}. Correct: {is_correct}")
+
+        # Skorlama mantığı buraya eklenebilir (örneğin ayrı bir Score tablosu ile)
+        if is_correct:
+            # TODO: Kullanıcının skorunu güncelle (veritabanında?)
+            flash("Correct!", "success")
+            pass
         else:
-            logging.info(f"Incorrect answer by user {user.name}.")
+            flash(f"Incorrect. The correct answer was: {correct_q_from_db.correct_answer}", "danger")
+            pass
 
-        session['current_question_index'] = q_index + 1
-        session.modified = True
+        # Cevap gönderildikten sonra ana sayfaya yönlendir.
+        # Kullanıcı yeni soruyu SocketIO üzerinden alacak.
         return redirect(url_for('index'))
 
     except Exception as e:
@@ -317,21 +329,105 @@ def submit_answer():
         return redirect(url_for('index'))
 
 
-# Reset rotasını da giriş kontrolü ile güncelle (opsiyonel ama mantıklı)
-@app.route('/reset')
-def reset_quiz():
-    user = get_current_user()
-    if not user:
-        return redirect(url_for('login_page'))
+# Reset rotası artık global state ile çalıştığı için anlamsız.
+# @app.route('/reset')
+# def reset_quiz():
+#     # ... (Bu fonksiyon kaldırılabilir veya admin paneline taşınabilir) ...
+#     pass
 
-    logging.info(f"User {user.name} resetting quiz.")
-    session.pop('current_question_index', None)
-    session.pop('score', None)
-    session.pop('quiz_over', None)
-    session.pop('total_questions', None)
-    # session.pop('error_message', None) # Flash kullanıyoruz
-    flash("Quiz reset.", "info")
-    return redirect(url_for('index'))
+# --- SocketIO Event Handlers ---
+@socketio.on('connect')
+def handle_connect():
+    user = get_current_user()
+    if user:
+        logging.info(f"User {user.name} connected via SocketIO.")
+        # Yeni bağlanan kullanıcıya mevcut soruyu gönder
+        global current_question_data
+        if current_question_data.get("question"):
+            question_payload = current_question_data["question"].to_dict()
+            question_payload["end_time"] = current_question_data["end_time"].isoformat() if current_question_data.get("end_time") else None
+            emit('new_question', question_payload) # Sadece bağlanan kişiye gönder
+            logging.info(f"Sent current question {current_question_data['question_id']} to newly connected user {user.name}")
+    else:
+        logging.warning("Unauthenticated user connected via SocketIO.")
+        # Giriş yapmamış kullanıcıları belki disconnect edebiliriz? Şimdilik loglayalım.
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    user = get_current_user()
+    logging.info(f"User {user.name if user else 'Unknown'} disconnected from SocketIO.")
+
+# --- Background Task for Quiz Timer ---
+def background_quiz_timer():
+    """Arka planda çalışarak periyodik olarak yeni soru gönderir."""
+    global current_question_data
+    last_question_id = None
+    logging.info("Background quiz timer thread started.")
+
+    with app.app_context(): # Veritabanı erişimi için app context gerekli
+        while not stop_event.is_set():
+            try:
+                # Veritabanından bir sonraki soruyu al (basit sıralama veya rastgele)
+                # Önceki sorudan farklı bir soru seçmeye çalışalım
+                query = Question.query
+                if last_question_id:
+                    query = query.filter(Question.id != last_question_id)
+
+                # Basitçe sıradaki ID'yi alalım (daha sofistike olabilir)
+                next_question = query.order_by(Question.id).first()
+                if not next_question:
+                    # Soru kalmadıysa veya ilk soruysa, baştan başla
+                    next_question = Question.query.order_by(Question.id).first()
+
+                if next_question:
+                    if next_question.id != last_question_id:
+                        logging.info(f"Timer: Selecting new question ID: {next_question.id}")
+                        current_question_data["question"] = next_question
+                        current_question_data["question_id"] = next_question.id
+                        current_question_data["end_time"] = datetime.now() + timedelta(seconds=QUESTION_DURATION)
+                        last_question_id = next_question.id
+
+                        # Tüm bağlı istemcilere yeni soruyu gönder
+                        question_payload = next_question.to_dict()
+                        question_payload["end_time"] = current_question_data["end_time"].isoformat()
+                        socketio.emit('new_question', question_payload)
+                        logging.info(f"Timer: Emitted new_question event for Q_ID: {next_question.id}")
+                    else:
+                        # Tek soru varsa veya bir hata olduysa logla
+                        logging.debug("Timer: No new question found or same question selected.")
+                        # Eğer tek soru varsa, süreyi yine de güncelleyebiliriz
+                        current_question_data["end_time"] = datetime.now() + timedelta(seconds=QUESTION_DURATION)
+                        question_payload = current_question_data["question"].to_dict()
+                        question_payload["end_time"] = current_question_data["end_time"].isoformat()
+                        socketio.emit('new_question', question_payload) # Süre güncellemesi için tekrar gönder
+
+
+                else:
+                    logging.warning("Timer: No questions found in the database!")
+                    # Soru yoksa bir süre bekle
+                    stop_event.wait(QUESTION_DURATION) # Hata durumunda CPU'yu yormamak için bekle
+                    continue # Döngünün başına dön
+
+            except Exception as e:
+                logging.exception("Timer: Error in background quiz timer loop:")
+                # Hata durumunda biraz bekle
+                stop_event.wait(5)
+
+            # Bir sonraki soruya geçmeden önce bekle
+            logging.debug(f"Timer: Waiting for {QUESTION_DURATION} seconds.")
+            stop_event.wait(QUESTION_DURATION) # Belirlenen süre kadar bekle
+
+    logging.info("Background quiz timer thread stopped.")
+
+
+def start_quiz_timer():
+    """Arka plan görevini başlatır."""
+    global quiz_timer_thread
+    if quiz_timer_thread is None or not quiz_timer_thread.is_alive():
+        stop_event.clear()
+        quiz_timer_thread = threading.Thread(target=background_quiz_timer, daemon=True)
+        quiz_timer_thread.start()
+        logging.info("Quiz timer background thread initiated.")
 
 # --- Veritabanı Yönetim Komutları ---
 # db-create ve db-seed komutları aynı kalıyor,
@@ -355,18 +451,52 @@ def db_seed():
          try:
             num_deleted = db.session.query(Question).delete()
             print(f"Deleted {num_deleted} existing questions before seeding.")
-            # ... (Soruları ekleme kodu) ...
-            q1 = Question(...)
-            q2 = Question(...)
-            q3 = Question(...)
-            db.session.add_all([q1, q2, q3])
+
+            # --- Sample Questions ---
+            q1 = Question(question_text="What is the capital of France?",
+                          option1="Berlin", option2="Madrid", option3="Paris", option4="Rome",
+                          correct_answer="Paris")
+            q2 = Question(question_text="Which planet is known as the Red Planet?",
+                          option1="Earth", option2="Mars", option3="Jupiter", option4="Venus",
+                          correct_answer="Mars")
+            q3 = Question(question_text="What is the largest ocean on Earth?",
+                          option1="Atlantic", option2="Indian", option3="Arctic", option4="Pacific",
+                          correct_answer="Pacific")
+            q4 = Question(question_text="What is 2 + 2 * 2?",
+                          option1="4", option2="6", option3="8", option4="2",
+                          correct_answer="6")
+            # --- End Sample Questions ---
+
+            db.session.add_all([q1, q2, q3, q4])
             db.session.commit()
-            print("Database seeded with initial questions!")
+            print(f"Database seeded with {Question.query.count()} initial questions!")
          except Exception as e:
             db.session.rollback()
             print(f"Error seeding database: {e}")
 
-# Yerelde çalıştırma kısmı aynı kalabilir
+# Yerelde çalıştırma
 if __name__ == '__main__':
-    # ...
-    app.run(debug=True, host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
+    # Veritabanı tablolarının var olduğundan emin ol (opsiyonel, ama iyi fikir)
+    with app.app_context():
+        try:
+            # Sadece tablo yoksa oluşturmayı deneyebiliriz, ama create_all güvenli olmalı
+            db.create_all()
+            logging.info("Database tables checked/created.")
+            # Başlangıçta soru yoksa uyar
+            if Question.query.count() == 0:
+                logging.warning("No questions found in the database. Run 'flask db-seed' command.")
+        except Exception as e:
+            logging.error(f"Error during initial DB check/creation: {e}")
+
+    # Arka plan görevini başlat
+    start_quiz_timer()
+
+    # Uygulamayı SocketIO ile çalıştır
+    port = int(os.environ.get('PORT', 5001)) # Changed default port to 5001
+    logging.info(f"Starting SocketIO server on host 0.0.0.0 port {port}")
+    # debug=True SocketIO ile dikkatli kullanılmalı, özellikle production'da False olmalı.
+    # Yerel geliştirme için debug=True sorun yaratabilir (reloader thread'i iki kez başlatabilir)
+    # Gunicorn gibi bir WSGI sunucusu production için daha iyidir.
+    # socketio.run(app, debug=False, host='0.0.0.0', port=port)
+    # Yerel test için debug'ı açalım ama dikkatli olalım:
+    socketio.run(app, debug=True, host='0.0.0.0', port=port, use_reloader=False) # Reloader'ı kapatmak thread sorununu çözebilir

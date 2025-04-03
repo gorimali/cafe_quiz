@@ -19,7 +19,23 @@
             margin-left: 10px;
         }
         .user-info a:hover { text-decoration: underline; }
+        #timer {
+            font-size: 1.5em;
+            font-weight: bold;
+            color: var(--primary-color);
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        .question-container { min-height: 150px; /* Prevent layout jumps */ }
+        .options label { display: block; margin-bottom: 10px; }
+        /* Add styles for disabled options if needed */
+        .options input[type="radio"]:disabled + span {
+             color: #999;
+             cursor: not-allowed;
+        }
     </style>
+    <!-- Socket.IO Client Library -->
+    <script src="https://cdn.socket.io/4.6.0/socket.io.min.js" integrity="sha384-c79GN5s/Z+5mSS7XWw6/w5n0/P+f/vL+l/6f/8/b/g/f/i/j/k/l/m/n/o/p/q/r/s/t/u/v/w/x/y/z=" crossorigin="anonymous"></script>
 </head>
 <body>
     <!-- Flash Mesajları burada da gösterelim -->
@@ -49,40 +65,131 @@
             <div class="error-message">{{ error_message }}</div>
         {% endif %}
 
-        {% if quiz_over %}
-            <!-- ... (Quiz Over bölümü aynı) ... -->
-            <div class="quiz-over">
-                <h2>Quiz Over!</h2>
-                {% if final_score is defined %}
-                <p class="final-score">Your Final Score: {{ final_score }} / {{ total_questions }}</p>
-                {% endif %}
-                <a href="{{ url_for('reset_quiz') }}" class="reset-link">Play Again?</a>
-            </div>
-        {% else %}
-             <!-- ... (Score board, progress bar, question container aynı) ... -->
-             <div class="score-board">Score: {{ score }}</div>
+        <!-- Timer Display -->
+        <div id="timer">--</div>
 
-            <!-- İlerleme Çubuğu -->
-             {% if total_questions and total_questions > 0 %}
-            <!-- ... (progress bar html aynı) ... -->
-             {% endif %}
+        <!-- Question Area - Updated by JavaScript -->
+        <div id="question-area" class="question-container">
+            <p id="question-text">Waiting for the next question...</p>
+            <form id="answer-form" action="{{ url_for('submit_answer') }}" method="post">
+                <div id="options-container" class="options">
+                    <!-- Options will be loaded here -->
+                </div>
+                <input type="hidden" id="question_id" name="question_id" value="">
+                <button type="submit" id="submit-button" disabled>Submit Answer</button>
+            </form>
+        </div>
 
-             {% if question %}
-             <div class="question-container">
-             <!-- ... (soru ve seçenekler aynı) ... -->
-             </div>
-             {% elif not error_message %}
-             <!-- ... (loading message aynı) ... -->
-             {% endif %}
+        <!-- Score display can be added here later -->
+        <!-- <div class="score-board">Score: <span id="current-score">0</span></div> -->
 
-             {% if not quiz_over %} <!-- Reset sadece quiz bitmediyse görünsün -->
-             <div style="text-align: center; margin-top: 30px;">
-                  <a href="{{ url_for('reset_quiz') }}" class="reset-link" style="background: none; border: none; color: #777; font-size: 0.9em;">Reset Quiz</a>
-             </div>
-             {% endif %}
-
-        {% endif %}
     </div> <!-- Kapsayıcı div sonu -->
 
+    <script>
+        document.addEventListener('DOMContentLoaded', (event) => {
+            // Connect to Socket.IO server
+            // Use window.location.origin to connect to the same host/port
+            const socket = io(window.location.origin);
+            let countdownInterval = null; // To store the interval ID
+
+            const questionTextElem = document.getElementById('question-text');
+            const optionsContainer = document.getElementById('options-container');
+            const questionIdInput = document.getElementById('question_id');
+            const submitButton = document.getElementById('submit-button');
+            const timerElem = document.getElementById('timer');
+
+            socket.on('connect', () => {
+                console.log('Connected to Socket.IO server');
+                // You could emit an event here if needed, e.g., to register the user
+            });
+
+            socket.on('disconnect', () => {
+                console.log('Disconnected from Socket.IO server');
+                questionTextElem.textContent = 'Connection lost. Attempting to reconnect...';
+                optionsContainer.innerHTML = '';
+                submitButton.disabled = true;
+                timerElem.textContent = '--';
+                if (countdownInterval) clearInterval(countdownInterval);
+            });
+
+            socket.on('connect_error', (err) => {
+              console.error('Socket.IO connection error:', err);
+              questionTextElem.textContent = 'Could not connect to the server.';
+              timerElem.textContent = 'Error';
+              if (countdownInterval) clearInterval(countdownInterval);
+            });
+
+            // Listen for new questions
+            socket.on('new_question', (data) => {
+                console.log('Received new question:', data);
+                if (!data || !data.question_text || !data.options || !data.id || !data.end_time) {
+                    console.error("Invalid question data received:", data);
+                    questionTextElem.textContent = 'Error receiving question data.';
+                    optionsContainer.innerHTML = '';
+                    submitButton.disabled = true;
+                    timerElem.textContent = 'Error';
+                    if (countdownInterval) clearInterval(countdownInterval);
+                    return;
+                }
+
+                questionTextElem.textContent = data.question_text;
+                questionIdInput.value = data.id;
+                optionsContainer.innerHTML = ''; // Clear previous options
+
+                data.options.forEach((option, index) => {
+                    const radioId = `option${index}`;
+                    const label = document.createElement('label');
+                    label.setAttribute('for', radioId);
+
+                    const radioInput = document.createElement('input');
+                    radioInput.type = 'radio';
+                    radioInput.name = 'answer';
+                    radioInput.value = option;
+                    radioInput.id = radioId;
+                    radioInput.required = true; // Ensure an option is selected
+
+                    const span = document.createElement('span');
+                    span.textContent = ` ${option}`; // Add space before option text
+
+                    label.appendChild(radioInput);
+                    label.appendChild(span);
+                    optionsContainer.appendChild(label);
+                });
+
+                submitButton.disabled = false; // Enable submit button
+
+                // --- Countdown Timer ---
+                if (countdownInterval) clearInterval(countdownInterval); // Clear previous timer
+
+                const endTime = new Date(data.end_time);
+
+                function updateTimer() {
+                    const now = new Date();
+                    const timeLeft = Math.round((endTime - now) / 1000);
+
+                    if (timeLeft >= 0) {
+                        timerElem.textContent = `${timeLeft}s`;
+                    } else {
+                        timerElem.textContent = 'Time Up!';
+                        clearInterval(countdownInterval);
+                        submitButton.disabled = true; // Disable submission after time is up
+                        // Optionally disable radio buttons too
+                        optionsContainer.querySelectorAll('input[type="radio"]').forEach(rb => rb.disabled = true);
+                    }
+                }
+
+                updateTimer(); // Initial display
+                countdownInterval = setInterval(updateTimer, 1000); // Update every second
+            });
+
+            // Optional: Handle form submission via JS if needed later,
+            // but standard form post works for now.
+            // document.getElementById('answer-form').addEventListener('submit', function(e) {
+            //     // e.preventDefault(); // Prevent default if handling via JS/SocketIO
+            //     // const formData = new FormData(this);
+            //     // ... send answer via socket or fetch ...
+            // });
+        });
+    </script>
 </body>
 </html>
