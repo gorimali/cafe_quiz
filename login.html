@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login - Cafe Quiz</title>
+    <style>
+        /* quiz.html'deki stillerden bazılarını alabiliriz veya yenilerini ekleyebiliriz */
+        :root {
+            --primary-color: #6a1b9a; /* Mor tema */
+            --secondary-color: #f3e5f5;
+            --accent-color: #ffab40;
+            --text-color: #333;
+            --light-text: #fff;
+            --facebook-blue: #1877F2;
+            --border-radius: 8px;
+            --box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+        }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            background-color: var(--secondary-color);
+            margin: 0;
+        }
+        .login-container {
+            background-color: #fff;
+            padding: 40px 50px;
+            border-radius: var(--border-radius);
+            box-shadow: var(--box-shadow);
+            text-align: center;
+            max-width: 400px;
+            width: 90%;
+        }
+        h1 { color: var(--primary-color); margin-bottom: 30px; }
+        .facebook-login-button {
+            display: inline-flex; /* İçeriği hizalamak için */
+            align-items: center;
+            justify-content: center;
+            background-color: var(--facebook-blue);
+            color: var(--light-text);
+            padding: 12px 25px;
+            border: none;
+            border-radius: var(--border-radius);
+            font-size: 1.1em;
+            font-weight: bold;
+            text-decoration: none;
+            cursor: pointer;
+            transition: background-color 0.2s ease, transform 0.1s ease;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        }
+        .facebook-login-button:hover {
+            background-color: #166fe5;
+            transform: translateY(-2px);
+        }
+        .facebook-login-button svg { /* Facebook logosu için yer */
+            width: 20px;
+            height: 20px;
+            margin-right: 10px;
+            fill: currentColor; /* Düğme rengini alır */
+        }
+        .flash-messages { list-style: none; padding: 0; margin-bottom: 20px; }
+        .flash-messages li {
+            padding: 10px 15px;
+            margin-bottom: 10px;
+            border-radius: var(--border-radius);
+            text-align: center;
+        }
+        .flash-messages .success { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .flash-messages .danger { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+        .flash-messages .warning { background-color: #fff3cd; color: #856404; border: 1px solid #ffeeba; }
+        .flash-messages .info { background-color: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb; }
+    </style>
+</head>
+<body>
+    <div class="login-container">
+        <h1>Welcome to the Cafe Quiz!</h1>
+
+        <!-- Flash Mesajları Gösterme -->
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                <ul class="flash-messages">
+                {% for category, message in messages %}
+                    <li class="{{ category }}">{{ message }}</li>
+                {% endfor %}
+                </ul>
+            {% endif %}
+        {% endwith %}
+
+        <a href="{{ url_for('facebook_login') }}" class="facebook-login-button">
+            <!-- Basit bir SVG Facebook ikonu -->
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M22 12c0-5.52-4.48-10-10-10S2 6.48 2 12c0 4.84 3.44 8.87 8 9.8V15H8v-3h2V9.5C10 7.57 11.57 6 13.5 6H16v3h-1.5c-1.1 0-1.5.5-1.5 1.5V12h3l-.5 3h-2.5v6.8c4.56-.93 8-4.96 8-9.8z"/></svg>
+            <span>Login with Facebook</span>
+        </a>
+        <p style="margin-top: 20px; font-size: 0.9em; color: #666;">Login to participate in the quiz!</p>
+    </div>
+</body>
+</html>
